@@ -1,0 +1,122 @@
+// Grafana Alloy configuration for Docker log collection
+// Replaces Promtail functionality
+
+// Discover Docker containers with the "logging=alloy" label
+discovery.docker "containers" {
+  host = "unix:///var/run/docker.sock"
+  refresh_interval = "5s"
+  
+  filter {
+    name   = "label"
+    values = ["logging=alloy"]
+  }
+}
+
+// Read logs from discovered Docker containers
+loki.source.docker "docker_logs" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.docker.containers.targets
+  forward_to = [loki.process.parse_logs.receiver]
+  
+  relabel_rules = rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+  
+  relabel_rules = rule {
+    source_labels = ["__meta_docker_container_log_stream"]
+    target_label  = "logstream"
+  }
+  
+  relabel_rules = rule {
+    source_labels = ["__meta_docker_container_label_logging_jobname"]
+    target_label  = "job"
+  }
+}
+
+// Process logs: parse JSON and extract fields
+loki.process "parse_logs" {
+  forward_to = [loki.write.loki_endpoint.receiver]
+  
+  // CRI log format parsing
+  stage.cri {}
+  
+  // Multiline log handling for stack traces
+  stage.multiline {
+    firstline     = "^\\d{4}-\\d{2}-\\d{2} \\d{1,2}:\\d{2}:\\d{2},\\d{3}"
+    max_wait_time = "3s"
+  }
+  
+  // Parse JSON logs and extract level field
+  stage.json {
+    expressions = {
+      level = "level",
+    }
+  }
+  
+  // Add level as a label
+  stage.labels {
+    values = {
+      level = "",
+    }
+  }
+}
+
+// Write logs to Loki
+loki.write "loki_endpoint" {
+  endpoint {
+    url = "http://" + env("LOKI_HOST") + "/loki/api/v1/push"
+    
+    // Optional: Add basic auth if needed
+    // basic_auth {
+    //   username = "loki"
+    //   password = env("LOKI_PASSWORD")
+    // }
+  }
+}
+
+// Optional: Collect Alloy's own metrics and send to Prometheus
+prometheus.exporter.self "alloy" { }
+
+prometheus.scrape "alloy_metrics" {
+  targets    = prometheus.exporter.self.alloy.targets
+  forward_to = [prometheus.remote_write.prometheus_endpoint.receiver]
+}
+
+// Write metrics to Prometheus
+prometheus.remote_write "prometheus_endpoint" {
+  endpoint {
+    url = "http://" + env("PROMETHEUS_HOST") + "/api/v1/write"
+    
+    // Optional: Add basic auth if needed
+    // basic_auth {
+    //   username = "prometheus"
+    //   password = env("PROMETHEUS_PASSWORD")
+    // }
+  }
+}
+
+// Optional: Collect traces from OTLP and send to Tempo
+otelcol.receiver.otlp "otlp_receiver" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  
+  output {
+    traces  = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = env("TEMPO_HOST")
+    tls {
+      insecure = true
+    }
+  }
+}

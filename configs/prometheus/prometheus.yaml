@@ -9,4 +9,8 @@ scrape_configs:
   - job_name: 'tempo'
     static_configs:
       - targets: [ 'tempo:3200' ]
+  - job_name: 'api-gateway'
+    metrics_path: /metrics
+    static_configs:
+      - targets: [ 'api-gateway:5000' ]
 

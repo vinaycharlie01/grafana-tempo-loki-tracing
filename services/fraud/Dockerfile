@@ -1,9 +1,31 @@
-FROM python:3.8
+# Build stage
+FROM golang:1.25-alpine AS builder
 
-COPY requirements.txt /src/requirements.txt
-RUN pip install -r /src/requirements.txt
+WORKDIR /app
 
-WORKDIR /application
+# Install git
+RUN apk add --no-cache git
+
+# Copy go mod files
+COPY go.mod ./
+COPY go.sum ./
+
+# Download dependencies
+RUN go mod download
+
+# Copy source
 COPY . .
 
-CMD ["python", "app.py"]
+# Build app
+RUN go build -o fraud-service .
+
+# Runtime stage
+FROM alpine:latest
+
+WORKDIR /root/
+
+COPY --from=builder /app/fraud-service .
+
+EXPOSE 5000
+
+CMD ["./fraud-service"]
